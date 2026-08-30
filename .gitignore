@@ -1,25 +1,24 @@
-# --- Python ---
+# Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 
-# --- Runtime artifacts (not committed) ---
-out/            # pushed frames (.bin / .gif / .png)
-data/           # pet memory pet_memory.json (private routine data)
-preview/        # dev preview images
-capture/        # captured / driver binaries (old reverse-engineering leftovers)
-*.log           # agent_run.log / agent.log
+# Runtime artifacts (not committed)
+out/
+data/
+preview/
+capture/
+*.log
 *.bin
 *.gif
 *.b64
 *.tmp
 
-# --- README media (always tracked) ---
+# README media (always tracked)
 !docs/*.gif
-!docs/*.png
 
-# --- Secrets / local credentials (never committed) ---
+# Secrets / local credentials (never committed)
 .ssh/
 *.key
 *.pem
