@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Windows 本地推屏（无 SSH）：GIF → Image2Bin → SerialPortTool → COM3。
+"""Windows 本地推屏：GIF → Image2Bin → SerialPortTool → COM3。
 
-与 pusher/push_anim.py 同一条官方链路，但用 subprocess 在**键盘机本机**调用，
-供 win_agent.py（Windows 本地常驻）使用，不需要 scp/ssh 往返。
+与 pusher/push_anim.py 同一条官方链路，但用 subprocess 在 **Windows 本机**调用，
+供 win_agent.py（Windows 本地常驻）使用。
 
 为什么用这条链：
   - Image2Bin.exe 是驱动自带官方 GIF→.bin 转换器，产出的 .bin 头是屏幕固件能

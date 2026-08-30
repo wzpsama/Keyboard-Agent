@@ -1,8 +1,7 @@
 """Windows 本地常驻 agent（离线版）—— 官方 Image2Bin + SerialPortTool 推屏。
 
-把原先「mini PC 渲染 + SSH 遥控 Windows」的架构收敛成**在键盘机（Windows）本地
-单进程跑**：屏幕（COM3）、键盘（USB HID）、官方推屏工具（Image2Bin.exe /
-SerialPortTool.exe）都在本机，无需任何 SSH 往返。
+**在 Windows 本机单进程跑**：屏幕（COM3）、键盘（USB HID）、官方推屏工具
+（Image2Bin.exe / SerialPortTool.exe）都在本机。
 
 单进程内的职责：
   1. 键盘钩子（WH_KEYBOARD_LL）—— 捕获「屏幕周围一圈」的按键，映射成视线方向
@@ -18,7 +17,7 @@ SerialPortTool.exe）都在本机，无需任何 SSH 往返。
   - 官方链是驱动自带、稳定正确；预渲染把「看向」的渲染+转换提前做好，按下键
     时只推现成 .bin，做到亚秒级响应。
 
-跑法（在键盘机 Windows 上，本文件所在目录）：
+跑法（在 Windows 上，本文件所在目录）：
   python  win_agent.py              # 前台，看日志，Ctrl+C 退出
   python  win_agent.py --interval 15
   pythonw win_agent.py              # 无窗口后台

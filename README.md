@@ -6,7 +6,7 @@ waits for you at home.
 
 **Runs as a single local process on your Windows PC**, talking to the screen
 directly through the keyboard's official driver chain (Image2Bin →
-SerialPortTool → COM3). No mini PC, no SSH relay.
+SerialPortTool → COM3).
 
 <p align="center">
   <img src="docs/hero.png" alt="Vega living in the AULA L99 keyboard screen" width="720">
