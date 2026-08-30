@@ -4,18 +4,22 @@ __pycache__/
 .venv/
 venv/
 
-# --- 运行时生成物（不提交）---
-out/            # 推屏产物（.bin/.gif/.png）
-data/           # 宠物记忆 pet_memory.json（含主人私密作息）
-preview/        # 开发预览图
-capture/        # 抓包/驱动二进制（旧逆向遗留）
+# --- Runtime artifacts (not committed) ---
+out/            # pushed frames (.bin / .gif / .png)
+data/           # pet memory pet_memory.json (private routine data)
+preview/        # dev preview images
+capture/        # captured / driver binaries (old reverse-engineering leftovers)
 *.log           # agent_run.log / agent.log
 *.bin
 *.gif
 *.b64
 *.tmp
 
-# --- 敏感 / 本地凭据（绝不提交）---
+# --- README media (always tracked) ---
+!docs/*.gif
+!docs/*.png
+
+# --- Secrets / local credentials (never committed) ---
 .ssh/
 *.key
 *.pem

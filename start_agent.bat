@@ -1,8 +1,8 @@
 @echo off
-chcp 65001 >nul
-rem 前台运行宠物 agent（看日志，Ctrl+C 退出）
+rem Foreground: run the Vega pet and watch its logs (Ctrl+C to stop).
 cd /d "%~dp0"
-python win_agent.py
+if exist ".venv\Scripts\python.exe" (set "PY=.venv\Scripts\python.exe") else (set "PY=python")
+%PY% win_agent.py
 echo.
-echo 宠物已停止。
+echo The pet has stopped.
 pause
