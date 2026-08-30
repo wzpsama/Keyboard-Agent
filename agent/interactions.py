@@ -67,12 +67,14 @@ class DeleteCry(Interaction):
     group = "keyboard"
 
     def __init__(self):
-        self._rl = RateLimit(150.0)
+        self._rl = RateLimit(10.0)   # 冷却 10s：哭动画播完（4s）后再等几秒即可重触发
 
     def on_tick(self, now, ctx):
-        if self._rl.ready(now) and (
-                ctx.keys.backspace_count(now, span=4) >= 3       # 快速连删
-                or ctx.keys.backspace_count(now, span=60) >= 20):  # 持续改稿
+        # 先判删除信号、后过限频。RateLimit.ready() 每次放行会「消耗」一次机会，
+        # 若放前面，限频机会会被没在删除的 tick 白白用掉 → 哭几乎触发不了。
+        if (ctx.keys.backspace_count(now, span=4) >= 3            # 快速连删
+                or ctx.keys.backspace_count(now, span=60) >= 20) \
+                and self._rl.ready(now):                           # 持续改稿
             ctx.say("呜呜呜 主人在删什么鸭", mood="cry", look=(-5, -5),
                     sub="别删了嘛～")
             print("[delete_cry] 连删哭泣")

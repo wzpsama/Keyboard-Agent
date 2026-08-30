@@ -1,4 +1,4 @@
-# Vega — an AI pet that lives in your keyboard
+# Keyboard-Agent — an AI pet that lives in your keyboard
 
 Turn the 3.98" IPS screen (320×480) of the **AULA L99** mechanical keyboard into
 the face of a cyberpunk AI pet — **Vega**, a silver-haired, red-eyed girl who
@@ -74,18 +74,64 @@ SerialPortTool → COM3). No mini PC, no SSH relay.
 Action animations only appear in the transient "speak / react" GIFs; the
 directional look sprites are unaffected.
 
-## Interactions (28 in `agent/interactions.py`)
+## Interactions
 
-- **Keyboard** — spacebar mashing, Ctrl+V crunch, backspace crying, Caps Lock
-  reminder, high WPM, game watching, app switching, away-and-back.
-- **Foreground app** — greets you in IDE / browser / office / game / terminal /
-  media; auto-silences during meetings; protects flow; eye-care during binge watch.
-- **System** — cares about high CPU / RAM, welcomes you back after load drops,
-  says goodnight on lock.
-- **Music / weather / guessing** — groove on song change, umbrella / coat
-  reminders, teasing by window title.
-- **Companionship** — milestone greetings, intimacy level-up, late-night care,
-  midnight care, late-night doze, meal / weekend / anniversary.
+28 hand-crafted reactions in `agent/interactions.py`. Highlights:
+
+### Keyboard
+
+| Situation | Vega… |
+|---|---|
+| You mash the spacebar | gets excited and jumps along |
+| You hammer Ctrl+V | teases you about "moving bricks again" |
+| You delete a lot while editing | bursts into exaggerated tears toward the delete key |
+| Caps Lock is left on while you type | gently points it out |
+| You type really fast | cheers your hand speed — or tells you to calm down |
+| You start gaming | turns into a spectator and roots for you |
+| You frantically flip between windows | offers to help you find whatever you lost |
+| You come back after a long break | welcomes you home |
+
+### Foreground app
+
+| Situation | Vega… |
+|---|---|
+| You switch to IDE / browser / office / game / terminal / media | greets you in that app's mood |
+| You join a meeting | goes quiet and silently keeps you company |
+| You game during work hours | catches you slacking off |
+| You work late in the IDE | urges you to rest |
+| You stay focused in the IDE | enters "flow mode" and stops interrupting |
+| You binge videos for a long stretch | reminds you to rest your eyes |
+| Your meeting ends | welcomes you back |
+
+### System
+
+| Situation | Vega… |
+|---|---|
+| The CPU / RAM runs hot | worries about the machine |
+| The load settles back down | reports that it "cooled down" |
+| You lock the screen | says goodbye |
+
+### Music · weather · guessing
+
+| Situation | Vega… |
+|---|---|
+| You start or change a song | grooves along and rates your taste |
+| It rains or snows | reminds you about an umbrella / a warm coat |
+| Morning | reads you the day's weather |
+| You open a familiar app | guesses what you're up to (without ever reading titles aloud) |
+
+### Companionship
+
+| Situation | Vega… |
+|---|---|
+| A milestone together (7 / 30 / 100 days) | celebrates |
+| Her intimacy level rises | says she feels closer to you |
+| You stayed up late last night | asks if you've had your coffee |
+| You're up past midnight | worries about you in real time |
+| Late at night, you step away | yawns and dozes off (eye mask + floating z's) |
+| Lunchtime | reminds you to eat |
+| Friday evening | wishes you a happy weekend |
+| Monthly anniversary | celebrates another month together |
 
 Each interaction declares a `priority` (high preempts / med / low) and a `group`
 (mutex groups like `"keyboard"`), arbitrated by `AgentContext.say` to avoid spam.

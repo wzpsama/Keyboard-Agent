@@ -664,6 +664,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Windows 本地常驻 agent（离线）")
     ap.add_argument("--interval", type=float, default=DEFAULT_INTERVAL,
                     help="慢思考间隔（秒）")
+    ap.add_argument("--debug-keys", action="store_true",
+                    help="在控制台打印退格/删除键及其 4s/60s 计数，用于排查哭泣触发")
     args = ap.parse_args()
 
     # 单实例锁：两个 agent 同时抢 COM3 会让 SerialPortTool 打不开串口、
@@ -740,6 +742,11 @@ def main() -> None:
             while _raw_keys:
                 vk, ctrl, t = _raw_keys.pop(0)
                 ctx.keys.add(vk, ctrl, t)
+                if args.debug_keys and vk in (keys.VK_BACK, keys.VK_DELETE):
+                    n = time.time()
+                    print(f"[debug-keys] {'Backspace' if vk == keys.VK_BACK else 'Delete'} "
+                          f"(4s={ctx.keys.backspace_count(n, 4)}, "
+                          f"60s={ctx.keys.backspace_count(n, 60)})")
 
             # 3) 定时逻辑（看向恢复等）
             now = time.time()

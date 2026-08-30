@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 echo ==============================================
-echo   Vega Keyboard Pet - Windows Setup
+echo   Keyboard-Agent - Windows Setup
 echo ==============================================
 echo.
 
