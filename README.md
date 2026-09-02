@@ -149,6 +149,7 @@ assets/vega/                sprites (clean / cry / bounce / sleepy / surprised /
 docs/                       README images & GIFs
 scripts/                    sprite build / re-processing scripts
 setup_windows.bat           one-click install
+setup_autostart.bat         install/remove logon autostart (Startup folder)
 start_agent.bat / run_agent.bat   launch scripts
 ```
 
