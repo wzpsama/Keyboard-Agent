@@ -174,8 +174,12 @@ def render_frame(state: dict) -> Image.Image:
     f_status = get_font(17)
     draw.text((30, 403), MOODS.get(mood, mood), font=f_status, fill=TEXT)
     draw.text((30, 430), sub, font=f_small, fill=TEXT_DIM)
-    # 呼吸指示灯
-    pr = 3 + int(2 * (0.5 + 0.5 * math.sin(t * 4)))
+    # The ambient GIF keeps the character still; its pulse carries the breath.
+    if state.get("ambient"):
+        pulse = 0.5 + 0.5 * math.sin(float(state.get("ambient_phase", 0.0)) * math.tau)
+    else:
+        pulse = 0.5 + 0.5 * math.sin(t * 4)
+    pr = 3 + int(2 * pulse)
     draw.ellipse((282 - pr, 412 - pr, 282 + pr, 412 + pr), fill=GLOW)
 
     return img

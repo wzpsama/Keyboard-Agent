@@ -29,11 +29,9 @@ anthropic + 配 ANTHROPIC_API_KEY 后，把 Brain(offline=True) 换成 False 即
 from __future__ import annotations
 
 import argparse
-import collections
 import ctypes
 import datetime
 import os
-import queue
 import sys
 import threading
 import time
@@ -44,14 +42,39 @@ sys.path.insert(0, HERE)
 if hasattr(sys.stdout, "reconfigure"):  # Windows 控制台 cp932/gbk 兜底 + 行缓冲
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
+from agent.runtime_log import RuntimeLog  # noqa: E402
+
+if __name__ == "__main__":
+    _runtime_log = RuntimeLog(os.path.join(HERE, "agent_run.log"), sys.__stdout__)
+    sys.stdout = sys.stderr = _runtime_log
+    print(f"===== agent start {datetime.datetime.now().isoformat()} =====")
+
 from renderer.render import render_frame  # noqa: E402
-from renderer.vega import mood_to_action, action_durations  # noqa: E402
+from renderer.gif_loop import save_loop_gif  # noqa: E402
+from renderer.vega import (  # noqa: E402
+    AMBIENT_DURATIONS_MS,
+    action_durations,
+    mood_to_action,
+)
 from agent.states import offline_next, SUBS  # noqa: E402
 from agent.memory import PetMemory  # noqa: E402
 from agent.core import Interaction, EventBus  # noqa: E402
 from agent import keys, sensors, weather  # noqa: E402
 from agent.interactions import EXTRA_INTERACTIONS  # noqa: E402
-from pusher.push_local import push_bin, push_gif, gif_to_bin  # noqa: E402
+from agent.push_control import (  # noqa: E402
+    DisplayScene,
+    DisplayState,
+    PushPacer,
+    PushQueue,
+    SceneDirector,
+)
+from agent.coding_status import (  # noqa: E402
+    CodingStatus,
+    CodingStatusCoordinator,
+    CodingStatusReader,
+    display_state,
+)
+from pusher.push_local import push_bin, gif_to_bin  # noqa: E402
 
 # ---- 常量 ----
 OUT_DIR = os.path.join(HERE, "out")
@@ -60,6 +83,10 @@ CHARACTER = "vega"           # 当前角色：织女/Vega（精灵版）；切�
 
 ACTIVE_S = 60                # < 60s 未输入视为「正在用电脑」
 DEFAULT_INTERVAL = 30.0      # 慢思考间隔（秒）
+CODING_STATUS_PATH = os.environ.get(
+    "VEGA_CODING_STATUS_FILE", os.path.join(DATA_DIR, "coding_status.json"))
+REMOTE_CODING_STATUS_PATH = os.environ.get(
+    "VEGA_REMOTE_CODING_STATUS_FILE", os.path.join(DATA_DIR, "coding_status_remote.json"))
 
 # 说话仲裁（防冲突）：全局节流 + 互斥组。优先级 high 可抢占，med/low 受最小间隔约束。
 SPEECH_MIN_GAP = 8.0         # med 优先级最小说话间隔（秒）
@@ -74,26 +101,13 @@ THINK_FPS = 4
 LOOK_FPS = 8
 LOOK_FRAMES = 1              # 看向用单帧静态图：屏幕端解压量降到 1/4，连点不积压
 
-# 面板背压限速（2026-08-24 卡死根因）：
-# 屏幕 flash 消化一个 ~10KB 看向要 ~2.5s（500ms/块）。喂太快 → 面板饱和 →
-# SerialPortTool 写入阻塞在驱动缓冲区（实测单次推到 13.7s = 「卡死」观感）。
-# 实测 300 连推全快是因为推屏背靠背无间隔；真实用户按键有节奏，面板边推边消化，
-# 一旦积压就进入「每推 ~11.5s」的稳定饱和态。所以：看向限速 + 慢推屏触发冷却排水。
-# 方案④ 自适应限速（2026-08-25，叠加其上）：推屏耗时 dt 本身=积压传感器
-# （面板空时单推 ~300ms；缓冲积压时 dt 变长）。AIMD 闭环调速：
-#   健康 dt≤1.5s 连续 HEALTHY_TO_SPEED 次 → gap×0.7 提速（下限 LOOK_GAP_MIN）；
-#   慢推屏 dt>1.5s → gap×2 退避（上限 LOOK_GAP_MAX）+ 冷却 = 本次 dt（排水量
-#   与积压成正比，取代固定 8s）；
-#   推屏失败（串口被杀）→ 直接回饱和档。
-# 校准（2026-08-25 用户实测无卡后调激进）：看向 ~9KB ≈ 面板消化 ~2.2s——
-# 连续快速打字的看向节奏上限就是 ~2.2s/个（物理消化速度，任何阈值都突破不了，
-# 积压会自动被退避拉回）。LOOK_GAP_MIN 只决定「零散按键（间隔>2.2s）」的响应
-# 快慢，可低到推屏链自身成本 ~0.3s 附近。
-LOOK_GAP_MIN = 0.4           # 面板健康时的看向最小间隔（秒）
-LOOK_GAP_MAX = 8.0           # 饱和退避上限（秒）
-LOOK_GAP_START = 1.2         # 启动/失败复位档（自适应半分钟内收敛到实际档位）
-LOOK_FAST_MS = 1500          # 单推耗时 ≤ 此值 = 健康；超过 = 饱和信号
-HEALTHY_TO_SPEED = 2         # 连续健康 N 次才提速一档（收敛更快）
+# The panel needs about 2.2 seconds to digest a small look frame. Apply the
+# pacing to every serial write, including scheduled animation frames.
+PUSH_MIN_GAP = 2.5
+PUSH_MAX_GAP = 30.0
+PUSH_SLOW_S = 4.0
+PUSH_TASK_MAX_AGE_S = 20.0
+PUSH_URGENT_TASK_MAX_AGE_S = 60.0
 
 # 饱和期「别太拼」关心帧（2026-08-25）：频繁快速敲击 → 面板积压（dt>阈值）时，
 # 把一次方向看向替换成单帧关心图（仍是 ~9KB 单帧，不加重面板负担），把「等待」
@@ -102,6 +116,10 @@ HW_LINE = "主人工作得太努力了"  # 气泡台词
 HW_SUB = "休息一下下～"       # 状态栏副标题
 HW_MOOD = "talk"              # 关心表情（brain.py 的 mood）
 HW_RATE_LIMIT = 12.0          # 饱和期最多每 12s 显示一次（避免刷屏）
+
+# These common steady moods are encoded before they are first needed. The
+# prewarm task never writes to the screen and yields to pending key looks.
+LOOK_PREWARM_MOODS = ("idle", "working", "thinking", "talk")
 
 # 方向 → 视线偏移 (dx, dy)。dx 正=右，dy 正=下
 DIR_LOOK = {
@@ -127,55 +145,14 @@ def dir_for(vk: int) -> str:
 # =====================================================================
 #  推屏：官方链 + 看向「最新覆盖」+ 后台线程（不阻塞按键泵）
 # =====================================================================
-class _PushQueue:
-    """串行推屏队列：看向是「单槽覆盖」只保留最新方向（丢弃过期帧）；
-    思考/渲染任务按 FIFO 串行。get() 优先返回看向，保证按键实时响应。"""
-    def __init__(self):
-        self._cond = threading.Condition()
-        self._look = None                       # 最新看向方向（None=无待推）
-        self._thinks = collections.deque()      # ("think", state) / ("look-cache", mood)
-
-    def put_look(self, direction: str) -> None:
-        with self._cond:
-            self._look = direction
-            self._cond.notify()
-
-    def put_think(self, task) -> None:
-        with self._cond:
-            self._thinks.append(task)
-            self._cond.notify()
-
-    def get(self):
-        with self._cond:
-            while self._look is None and not self._thinks:
-                self._cond.wait()
-            if self._look is not None:
-                d = self._look
-                self._look = None
-                return ("look", d)
-            return self._thinks.popleft()
-
-    def take_look(self):
-        """取出并清空最新看向（无则返回 None）。供限速等待/长渲染期间重取最新方向。"""
-        with self._cond:
-            d = self._look
-            self._look = None
-            return d
-
-    def clear_look(self):
-        """丢弃待推看向（无则 no-op）。哭/表情锁定时用，让哭动画立即插队不被转头抢先。"""
-        with self._cond:
-            self._look = None
-
-
-_push_q = _PushQueue()
+_push_q = PushQueue()
 _look_bins: dict[str, str] = {}                       # direction -> .bin（当前 mood）
 _look_bins_cache: dict[tuple[str, str], str] = {}     # (mood, direction) -> .bin
 _hardworking_bin: str = ""                            # 饱和期关心帧 .bin 路径（懒渲染，独立于 mood）
 
 
 def _render_gif(state: dict, name: str, frames: int, fps: int,
-                durations=None, on_progress=None) -> str:
+                durations=None, on_progress=None, ambient: bool = False) -> str:
     """把单个状态渲染成一段循环动画 GIF（眨眼/动作随 t 自动驱动），返回路径。
 
     durations 为每帧时长(ms)列表时，按非均匀节奏渲染（动作动画用），帧数取
@@ -194,13 +171,16 @@ def _render_gif(state: dict, name: str, frames: int, fps: int,
         s["t"] = t0 + (sum(durations[:i]) / 1000.0 if durations else i * dt)
         s["clock"] = clock
         s.setdefault("character", CHARACTER)  # 默认用 Vega 精灵（含方向视图）
+        if ambient:
+            s["ambient"] = True
+            s["ambient_phase"] = i / n
+            s["blink"] = i == n // 2
         imgs.append(render_frame(s))
         if on_progress is not None:
             on_progress(i, n)
     gif = os.path.join(OUT_DIR, name)
     gif_duration = durations if durations else int(1000 / fps)
-    imgs[0].save(gif, save_all=True, append_images=imgs[1:],
-                 duration=gif_duration, loop=0, optimize=False)
+    save_loop_gif(imgs, gif, gif_duration)
     return gif
 
 
@@ -216,7 +196,16 @@ def _render_look_bins(mood: str) -> dict[str, str]:
         sub = "看到主人啦" if direction != "center" else "住在你的键盘里"
         state = {"mood": mood, "line": "", "sub": sub,
                  "look": DIR_LOOK[direction], "t": 0.0}
-        gif = _render_gif(state, f"look_{mood}_{direction}.gif", LOOK_FRAMES, LOOK_FPS)
+        ambient = direction == "center"
+        durations = AMBIENT_DURATIONS_MS if ambient else None
+        gif = _render_gif(
+            state,
+            f"look_{mood}_{direction}.gif",
+            LOOK_FRAMES,
+            LOOK_FPS,
+            durations=durations,
+            ambient=ambient,
+        )
         path = gif_to_bin(gif)
         _look_bins_cache[key] = path
         bins[direction] = path
@@ -231,7 +220,14 @@ def _ensure_hardworking_bin() -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
     state = {"mood": HW_MOOD, "line": HW_LINE, "sub": HW_SUB,
              "look": (0, 0), "t": 0.0}
-    gif = _render_gif(state, "look_hardworking.gif", LOOK_FRAMES, LOOK_FPS)
+    gif = _render_gif(
+        state,
+        "look_hardworking.gif",
+        len(AMBIENT_DURATIONS_MS),
+        LOOK_FPS,
+        durations=AMBIENT_DURATIONS_MS,
+        ambient=True,
+    )
     _hardworking_bin = gif_to_bin(gif)
     print(f"[push] 「别太拼」关心帧已就绪：{os.path.basename(_hardworking_bin)}")
 
@@ -251,7 +247,18 @@ def prepare_look_bins(mood: str = "idle", blocking: bool = False) -> None:
         print(f"[push] 看向 .bin 已缓存（mood={mood}）: "
               f"{', '.join(os.path.basename(p) for p in _look_bins.values())}")
     else:
-        _push_q.put_think(("look-cache", mood))
+        _push_q.put_task("look-cache", mood)
+
+
+def prewarm_look_bins(exclude: str) -> None:
+    """Queue low-priority conversion of common steady look scenes."""
+    moods = tuple(
+        mood for mood in LOOK_PREWARM_MOODS
+        if mood != exclude and not all((mood, direction) in _look_bins_cache
+                                        for direction in DIR_LOOK)
+    )
+    if moods:
+        _push_q.put_task("look-prewarm", moods)
 
 
 def push_look(direction: str) -> None:
@@ -260,117 +267,149 @@ def push_look(direction: str) -> None:
         _push_q.put_look(direction)
 
 
-def push_think(state: dict) -> None:
+def push_think(state: dict, *, routine: bool = False, urgent: bool = False) -> None:
     """把思考状态渲染成动画 GIF → Image2Bin → SerialPortTool（后台线程）。"""
-    _push_q.put_think(("think", state))
+    _push_q.put_task("think", state, routine=routine, urgent=urgent)
+
+
+def _look_scene(path: str) -> DisplayScene:
+    return DisplayScene("look", (os.path.basename(path),))
+
+
+def _animation_scene(state: dict) -> DisplayScene:
+    fields = ("character", "mood", "motion", "line", "sub", "look", "title")
+    key = tuple(f"{field}={state.get(field, CHARACTER if field == 'character' else None)!r}"
+                for field in fields)
+    return DisplayScene("animation", key)
 
 
 def _push_worker() -> None:
-    """后台推屏线程：优先推看向（实时），再串行处理思考/渲染。
-
-    面板背压（2026-08-24 卡死根因修复）：屏幕消化一个 ~10KB 看向要 ~2.5s，
-    喂太快会饱和 → SerialPortTool 阻塞（实测 13.7s）。因此：
-      ①看向按 look_gap 限速 + latest-wins 只推最新方向；
-      ②方案④ 自适应：dt>1.5s 判饱和 → gap×2 退避 + 按 dt 冷却排水，
-        冷却期间丢弃过期看向（睡醒后重取最新方向补推一次）；
-        连续健康则 gap 逐步回落到 1.2s（宠物更灵敏）。
-    推屏超时由 push_bin 内部杀掉 SerialPortTool 释放串口，自动重开复位自愈。
-    """
+    """Serialize and pace every display write through the official tools."""
     global _look_bins
-    last_look_t = 0.0         # 上次看向推屏完成时刻（限速用）
-    cooldown_until = 0.0      # 面板饱和冷却截止时刻（0=未冷却）
-    look_gap = LOOK_GAP_START # 方案④：当前看向最小间隔，按面板健康度自适应
-    healthy_streak = 0        # 连续健康推屏计数（攒满提速）
-    pending_hw = False        # 饱和期：下一次看向替换成「别太拼」关心帧
-    last_hw_t = 0.0           # 上次显示关心帧时刻（限频）
+    pacer = PushPacer(min_gap=PUSH_MIN_GAP, max_gap=PUSH_MAX_GAP,
+                      slow_threshold=PUSH_SLOW_S)
+    display = DisplayState()
+    scenes = SceneDirector()
+    pending_hw = False
+    last_hw_t = 0.0
+
+    def send_bin(path: str, label: str, scene: DisplayScene) -> float | None:
+        if not scenes.needs_transition(scene):
+            print(f"[push] {label} skipped; scene already current")
+            return None
+        unchanged, digest = display.compare(path)
+        if unchanged:
+            scenes.mark_displayed(scene)
+            print(f"[push] {label} skipped; display already current")
+            return None
+        pacer.wait()
+        started = time.monotonic()
+        try:
+            push_bin(path)
+        except Exception:
+            display.invalidate()
+            scenes.invalidate()
+            delay = pacer.failed()
+            print(f"[push] {label} failed; next attempt in {delay:.0f}s")
+            raise
+        duration = time.monotonic() - started
+        display.mark(digest)
+        scenes.mark_displayed(scene)
+        gap = pacer.succeeded(duration)
+        status = "slow" if duration > PUSH_SLOW_S else "ok"
+        print(f"[push] {label} {status} duration={duration:.3f}s "
+              f"next_gap={gap:.1f}s")
+        return duration
 
     def do_look(payload, sleep_ok=True):
-        """推一个看向 .bin：限速门控 + 推前重取最新方向 + 方案④ 自适应调速。
-        饱和期按 HW_RATE_LIMIT 频度把方向看向替换成「别太拼」关心帧。
-        sleep_ok=False 供思考渲染间隙调用（不阻塞渲染，超限速直接跳过）。"""
-        nonlocal last_look_t, cooldown_until, look_gap, healthy_streak, pending_hw, last_hw_t
-        now = time.time()
-        if now < cooldown_until:
-            if not sleep_ok:
-                return
-            time.sleep(cooldown_until - now)
-            cooldown_until = 0.0
-        elif now - last_look_t < look_gap:
-            if not sleep_ok:
-                return
-            time.sleep(last_look_t + look_gap - now)
+        """Send the newest look after pacing, replacing it with care if busy."""
+        nonlocal pending_hw, last_hw_t
+        if not sleep_ok and not pacer.ready():
+            return
+        pacer.wait()
         if pending_hw and _hardworking_bin:
             pending_hw = False
-            _push_q.take_look()       # 丢弃这次方向看向（被关心帧取代）
+            _push_q.take_look()
             target, label = _hardworking_bin, "别太拼"
         else:
-            d = _push_q.take_look()   # 睡醒重取：期间新看向已覆盖旧方向
-            if d is not None:
-                payload = d
+            latest = _push_q.take_look()
+            if latest is not None:
+                payload = latest
             target, label = _look_bins[payload], payload
-        t0 = time.time()
-        try:
-            push_bin(target)
-        except Exception:
-            # 推屏失败（串口被杀等）：面板状态未知 → 回饱和档，交给外层自愈
-            look_gap = LOOK_GAP_MAX
-            healthy_streak = 0
-            cooldown_until = time.time() + LOOK_GAP_MAX
-            raise
-        dt = time.time() - t0
-        last_look_t = time.time()
-        if dt * 1000 > LOOK_FAST_MS:
-            # 饱和：指数退避 + 冷却排水（冷却量 = 本次积压耗时 dt，随积压自适应）
-            look_gap = min(LOOK_GAP_MAX, look_gap * 2)
-            healthy_streak = 0
-            cooldown_until = last_look_t + dt
-            if last_look_t - last_hw_t >= HW_RATE_LIMIT:
+        duration = send_bin(target, f"look {label}", _look_scene(target))
+        if duration is not None and duration > PUSH_SLOW_S:
+            now = time.monotonic()
+            if now - last_hw_t >= HW_RATE_LIMIT:
                 pending_hw = True
-                last_hw_t = last_look_t
-            print(f"[push] 看向 {label} ({dt*1000:.0f}ms) — 面板饱和，"
-                  f"退避 gap={look_gap:.1f}s + 冷却 {dt:.1f}s 排水")
-        else:
-            healthy_streak += 1
-            if healthy_streak >= HEALTHY_TO_SPEED:
-                healthy_streak = 0
-                look_gap = max(LOOK_GAP_MIN, look_gap * 0.7)
-                print(f"[push] 看向 {label} ({dt*1000:.0f}ms) — 面板健康，"
-                      f"提速 gap={look_gap:.1f}s")
-            else:
-                print(f"[push] 看向 {label} ({dt*1000:.0f}ms)")
+                last_hw_t = now
 
     while True:
-        kind, payload = _push_q.get()
+        task = _push_q.get()
+        kind, payload = task.kind, task.payload
         try:
             if kind == "look":
                 do_look(payload)
             elif kind == "think":
-                # 思考长动画：每渲染几帧检查一次待推看向并先推，避免阻塞按键响应。
+                max_age = (PUSH_URGENT_TASK_MAX_AGE_S if task.urgent
+                           else PUSH_TASK_MAX_AGE_S)
+                if time.monotonic() - task.created_at > max_age:
+                    print("[push] dropped stale animation")
+                    continue
+                scene = _animation_scene(payload)
+                if not scenes.needs_transition(scene):
+                    print("[push] skipped unchanged animation scene")
+                    continue
+
                 def _yield_look(i, frames):
-                    if i % 3 == 0:
+                    if not task.urgent and i % 3 == 0 and pacer.ready():
                         d = _push_q.take_look()
                         if d is not None:
                             try:
                                 do_look(d, sleep_ok=False)
                             except Exception as e:
-                                print(f"[push] 看向 {d} 间隙推屏失败：{e}")
-                # 动作动画（motion）按自身非均匀帧时长渲染；普通思考按均匀节奏
+                                print(f"[push] look during render failed: {e}")
+
                 motion = payload.get("motion")
-                durations = action_durations(motion) if motion else None
+                ambient = not motion and payload.get("mood") != "cry"
+                durations = (action_durations(motion) if motion else
+                             AMBIENT_DURATIONS_MS if ambient else None)
                 frames = len(durations) if durations else int(THINK_DURATION * THINK_FPS)
                 gif = _render_gif(payload, "think.gif", frames, THINK_FPS,
-                                  durations=durations, on_progress=_yield_look)
-                # 渲染期间面板持续排水；若仍在饱和冷却，推大 .bin 前先等冷却结束。
-                if time.time() < cooldown_until:
-                    time.sleep(cooldown_until - time.time())
-                    cooldown_until = 0.0
-                push_gif(gif)
-                print(f"[push] 思考「{payload.get('line') or ''}」推屏完成")
+                                  durations=durations, on_progress=_yield_look,
+                                  ambient=ambient)
+                if time.monotonic() - task.created_at > max_age:
+                    print("[push] dropped stale animation after render")
+                    continue
+                try:
+                    bin_path = gif_to_bin(gif)
+                except Exception:
+                    delay = pacer.failed()
+                    print(f"[push] converter failed; next attempt in {delay:.0f}s")
+                    raise
+                while True:
+                    pacer.wait()
+                    if time.monotonic() - task.created_at > max_age:
+                        print("[push] dropped stale animation before send")
+                        break
+                    if not task.urgent:
+                        d = _push_q.take_look()
+                        if d is not None:
+                            do_look(d, sleep_ok=False)
+                            continue
+                    send_bin(bin_path, "animation", scene)
+                    break
             elif kind == "look-cache":
                 _look_bins = _render_look_bins(payload)
                 print(f"[push] 看向 .bin 已缓存（mood={payload}）")
+            elif kind == "look-prewarm":
+                for index, mood in enumerate(payload):
+                    if _push_q.has_look():
+                        _push_q.put_task("look-prewarm", payload[index:])
+                        break
+                    _render_look_bins(mood)
+                    print(f"[push] prewarmed look scenes (mood={mood})")
         except Exception as e:
-            print(f"[push] 推屏异常：{e}（串口已释放，后续推屏会自动重开复位）")
+            print(f"[push] {kind} failed: {e}")
 
 
 # =====================================================================
@@ -410,6 +449,7 @@ class AgentContext:
         self.last_speech = 0.0          # 上次说话时间戳（全局节流）
         self.last_group = {}            # group -> 上次该组说话时间戳（互斥组）
         self.look_suppress_until = 0.0  # 哭/表情锁定截止时间戳：此时间前看向被抑制
+        self.coding_status: CodingStatus | None = None
 
     def is_quiet(self, now: float) -> bool:
         return now < self.quiet_until
@@ -437,6 +477,34 @@ class AgentContext:
         self.memory.remember_mood(self.cur_mood)
         self.memory.save()
 
+    def has_coding_status(self) -> bool:
+        """Keep the coding-agent scene steady until its event expires."""
+        return self.coding_status is not None
+
+    def apply_coding_status(self, status: CodingStatus | None) -> None:
+        """Render a coarse external state without recording any work content."""
+        previous = self.coding_status
+        self.coding_status = status
+        now = datetime.datetime.now()
+        if status is None:
+            if previous is None:
+                return
+            state = {
+                "mood": self.cur_mood,
+                "line": "",
+                "sub": SUBS.get(self.cur_mood, "住在你的键盘里"),
+                "clock": now.strftime("%H:%M"),
+                "t": time.time() % 3600,
+            }
+            self.speak_state(state, priority="high", group="coding-status", urgent=True)
+            print("[coding-status] cleared; restored pet scene")
+            return
+        state = display_state(status)
+        state["clock"] = now.strftime("%H:%M")
+        state["t"] = time.time() % 3600
+        self.speak_state(state, priority="high", group="coding-status", urgent=True)
+        print(f"[coding-status] {status.state} revision={status.revision}")
+
     def _allow_speech(self, now: float, priority: str, group: str | None) -> bool:
         gap = now - self.last_speech
         if group and now - self.last_group.get(group, 0.0) < GROUP_WINDOW \
@@ -454,9 +522,13 @@ class AgentContext:
             self.last_group[group] = now
 
     def speak_state(self, state: dict, priority: str = "med",
-                    group: str | None = None) -> dict | None:
+                    group: str | None = None, routine: bool = False,
+                    urgent: bool = False) -> dict | None:
         """带节流的推一句（状态已渲染好）。被节流挡下时返回 None。"""
         now = time.time()
+        if self.has_coding_status() and not urgent:
+            print("[agent] coding status active; suppressed non-status scene")
+            return None
         if not self._allow_speech(now, priority, group):
             return None
         self._mark_speech(now, group)
@@ -468,7 +540,7 @@ class AgentContext:
         # 反应动作：mood → 动作动画。只出现在「说话/反应」的瞬时 GIF 里，
         # 看向按键的方向精灵（look bin）不设 motion，故不受影响。
         state["motion"] = mood_to_action(state.get("mood", ""))
-        push_think(state)
+        push_think(state, routine=routine, urgent=urgent)
         return state
 
     def say(self, line: str, mood: str = "talk", sub: str | None = None,
@@ -504,8 +576,8 @@ class LookTowardKeys(Interaction):
         self.look_until = 0.0
 
     def on_event(self, ev: dict, ctx: AgentContext) -> None:
-        if time.time() < ctx.look_suppress_until:
-            return                       # 哭/表情锁定中：不转头，避免覆盖哭动画
+        if ctx.has_coding_status() or time.time() < ctx.look_suppress_until:
+            return  # Coding status and crying both keep their scene on screen.
         d = ev["direction"]
         self.look_until = time.time() + self.LOOK_HOLD
         if d == self.last_dir:
@@ -515,7 +587,7 @@ class LookTowardKeys(Interaction):
         print(f"[look] 看向 {d}")
 
     def on_tick(self, now: float, ctx: AgentContext) -> None:
-        if now < ctx.look_suppress_until:
+        if ctx.has_coding_status() or now < ctx.look_suppress_until:
             self.look_until = 0.0
             self.last_dir = None
             return                       # 锁定中不恢复正视，让哭动画持续
@@ -678,24 +750,13 @@ def main() -> None:
               "本实例退出。请先关闭旧窗口再启动。")
         return
 
-    # 日志：控制台 + agent_run.log 双写（卡死时留下现场证据，UTF-8 防中文乱码）
-    class _Tee:
-        def __init__(self, f):
-            self.f = f
-        def write(self, s):
-            sys.__stdout__.write(s)
-            self.f.write(s)
-            self.f.flush()
-        def flush(self):
-            sys.__stdout__.flush()
-            self.f.flush()
-    _logf = open(os.path.join(HERE, "agent_run.log"), "a", encoding="utf-8")
-    sys.stdout = _Tee(_logf)
-    _logf.write(f"\n===== agent 启动 {datetime.datetime.now()} =====\n")
-
     _setup_prototypes()
     ctx = AgentContext()
     bus = EventBus(ctx, INTERACTIONS)
+    coding_status = CodingStatusCoordinator({
+        "local": CodingStatusReader(CODING_STATUS_PATH),
+        "remote": CodingStatusReader(REMOTE_CODING_STATUS_PATH),
+    })
 
     # 后台推屏线程（不阻塞按键泵）
     threading.Thread(target=_push_worker, daemon=True).start()
@@ -704,6 +765,7 @@ def main() -> None:
     try:
         prepare_look_bins(ctx.cur_mood, blocking=True)
         _ensure_hardworking_bin()   # 饱和期「别太拼」关心帧，一次性就绪
+        prewarm_look_bins(ctx.cur_mood)
     except Exception as e:
         print(f"[push] 预渲染看向 .bin 失败：{e}")
 
@@ -752,21 +814,29 @@ def main() -> None:
             ctx.last_idle_s = idle_s()
             bus.tick(now)
 
+            # Each optional source contains only a short status enum.
+            transition = coding_status.poll(now)
+            if transition is not None:
+                ctx.apply_coding_status(transition.current)
+
             # 4) 慢思考（离线大脑）
             if now - last_think >= args.interval:
                 last_think = now
                 active = idle_s() < ACTIVE_S
-                state = ctx.think(active)
-                if now >= ctx.quiet_until:
-                    ctx.speak_state(state)
+                if ctx.has_coding_status():
+                    print("[agent] coding status active; skipped routine scene")
                 else:
-                    print("[agent] 静默中，跳过思考推屏")
-                try:
-                    prepare_look_bins(ctx.cur_mood)  # 随新 mood 刷新看向 .bin
-                except Exception as e:
-                    print(f"[push] 刷新看向 .bin 失败：{e}")
+                    state = ctx.think(active)
+                    if now >= ctx.quiet_until:
+                        ctx.speak_state(state, routine=True)
+                    else:
+                        print("[agent] 静默中，跳过思考推屏")
+                    try:
+                        prepare_look_bins(ctx.cur_mood)  # 随新 mood 刷新看向 .bin
+                    except Exception as e:
+                        print(f"[push] 刷新看向 .bin 失败：{e}")
+                    print(f"[agent] 思考: {state['mood']}「{state.get('line') or ''}」")
                 ctx.observe(active)
-                print(f"[agent] 思考: {state['mood']}「{state.get('line') or ''}」")
 
             time.sleep(0.03)   # ~33ms 泵一次，按键响应足够快
     finally:

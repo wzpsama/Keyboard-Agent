@@ -1,6 +1,13 @@
 @echo off
-rem Background launcher: runs the Keyboard-Agent pet silently, logging to agent.log.
-rem Uses %~dp0 so it works from any folder; prefers the local .venv if present.
+rem Manual windowless launcher. Runtime output goes to agent_run.log.
 cd /d "%~dp0"
-if exist ".venv\Scripts\python.exe" (set "PY=.venv\Scripts\python.exe") else (set "PY=python")
-start "" /min cmd /c "%PY% win_agent.py > agent.log 2>&1"
+if exist ".venv\Scripts\pythonw.exe" (
+    start "" /d "%CD%" "%CD%\.venv\Scripts\pythonw.exe" "%CD%\win_agent.py"
+) else (
+    where pythonw.exe >nul 2>nul
+    if errorlevel 1 (
+        echo pythonw.exe was not found. Run setup_windows.bat first.
+        exit /b 1
+    )
+    start "" /d "%CD%" pythonw.exe "%CD%\win_agent.py"
+)

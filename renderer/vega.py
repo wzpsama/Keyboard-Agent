@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 _VEGA_ROOT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -29,6 +29,22 @@ _ASSET_DIR = os.path.join(_VEGA_ROOT, "clean")
 _CRY_DIR = os.path.join(_VEGA_ROOT, "cry")
 _CACHE: dict[str, Image.Image] = {}
 NAMES = ("front", "left", "left_top", "top")
+
+# Four lightweight frames are transmitted once and looped by the panel.
+AMBIENT_DURATIONS_MS = (1100, 900, 140, 1860)
+
+# Eye interiors in the 447x415 source sprites. The existing lashes remain
+# visible around these masks so the generated closed eyes match each pose.
+_BLINK_EYES = {
+    "front": (((137, 232, 198, 282), (254, 226, 211)),
+              ((247, 232, 307, 282), (254, 226, 211))),
+    "left": (((119, 232, 168, 282), (254, 226, 211)),
+             ((215, 231, 274, 282), (254, 226, 211))),
+    "left_top": (((125, 204, 176, 255), (254, 231, 218)),
+                 ((218, 207, 276, 260), (254, 231, 218))),
+    "top": (((138, 205, 201, 256), (254, 226, 211)),
+            ((247, 205, 307, 256), (254, 226, 211))),
+}
 
 # 哭脸帧数（assets/vega/cry/cry_1..6.png），循环播放。
 _CRY_FRAMES = 6
@@ -80,6 +96,24 @@ def _sprite(name: str) -> Image.Image:
         im = Image.open(os.path.join(_ASSET_DIR, name + ".png")).convert("RGBA")
         _CACHE[name] = im
     return _CACHE[name]
+
+
+def _blink_sprite(name: str) -> Image.Image:
+    """Create and cache a closed-eye variant without adding asset files."""
+    key = f"blink:{name}"
+    if key not in _CACHE:
+        image = _sprite(name).copy()
+        draw = ImageDraw.Draw(image)
+        for box, skin in _BLINK_EYES[name]:
+            draw.ellipse(box, fill=(*skin, 255))
+            left, top, right, bottom = box
+            center_y = (top + bottom) // 2
+            inset = max(3, (right - left) // 12)
+            draw.arc((left + inset, center_y - 10,
+                      right - inset, center_y + 13),
+                     180, 360, fill=(18, 13, 31, 255), width=6)
+        _CACHE[key] = image
+    return _CACHE[key]
 
 
 def _cry_sprite(index: int) -> Image.Image:
@@ -139,6 +173,7 @@ def render_vega(state: dict, height: int = 220) -> Image.Image:
     elif state.get("mood") == "cry":
         sp = _cry_sprite(_cry_index(t))
     else:
-        sp = _sprite(pick_sprite(state.get("look", (0, 0))))
+        name = pick_sprite(state.get("look", (0, 0)))
+        sp = _blink_sprite(name) if state.get("blink") else _sprite(name)
     w = max(1, round(sp.width * height / sp.height))
     return sp.resize((w, height), Image.LANCZOS)

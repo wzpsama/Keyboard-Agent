@@ -54,52 +54,62 @@ class FeedPet(Interaction):
 
 ## 3. Animation & expression
 
-- **Multi-frame looping**: look/think are single frames today. Reuse
-  `renderer/generate_gif.py`'s `build_mood_frames` (blink / mouth / antenna
-  pulse driven by `t`) and push a GIF loop.
-- **Look transition**: add 2–3 in-between frames from front to a direction
-  instead of an instant switch.
-- **Life**: small random motions (yawn, variable blink rate, antenna jitter).
+**Current**: centered ambient scenes use compact GIF loops with blinking and a
+pulsing status light while keeping the character's scale fixed. Reactions such
+as completion keep their dedicated action animations. The PC sends each loop
+once; the keyboard screen keeps replaying it. Off-center looks remain static to
+keep key reactions small and responsive. Shared palettes reduce frame-to-frame
+color changes.
+
+Next candidates:
+
+- **Look transition**: add 2–3 in-between frames from front to a direction only
+  if the extra transfer size does not make key reactions feel slower.
+- **More life**: add bounded loops such as a yawn, variable blink timing, or
+  antenna jitter while preserving a fixed character canvas.
+- **Animation budget**: formalize frame-count and encoded-size limits so new
+  expressions cannot silently degrade serial responsiveness.
 
 ---
 
 ## 4. Push performance (lower latency) — current bottleneck
 
-**Measured breakdown (2026-08-23, local single-frame push 1.9s)**: render 4ms +
-RGB565 18ms + build_bin 94ms + **SerialPortTool serial streaming 1801ms (94%)**.
+**Current**: scene uploads and the screen's processing time remain the limiting
+factors. Production keeps the official compressed GIF → Image2Bin →
+SerialPortTool → COM3 path, with pre-converted scenes, panel-side animation
+loops, duplicate suppression, bounded queues, and failure backoff.
 
-Local + event-driven already cut "key press → reaction start" to ~0.13s, but a
-**full-frame write is 1.8s** (screen = USB-serial CDC `VID_EEEF:PID_268A = COM3`;
-SerialPortTool streams 150 blocks × 2060B, limited by CDC serial throughput —
-frame-rate ceiling ~0.5fps).
+The earlier raw-frame experiments do not establish partial updates for the
+compressed animation format. Neither instant asset switching nor a safe direct
+serial replacement has been verified. Earlier latency estimates for those
+ideas were hypotheses, not production guarantees.
 
-Faster paths (by payoff):
+Next candidates:
 
-1. **Incremental refresh (biggest win: 1.8s → ~0.1s)**: the block protocol is
-   already reversed (each block carries a u32 address, base 0x04240000, +0x800
-   per block). Write only the tens of blocks covering the eyes / body (~10KB
-   instead of a full 307KB frame) plus a "commit" command. Look only needs the
-   body region updated.
-2. **pyserial direct write to COM3 (skip SerialPortTool's exe startup + Qt
-   overhead)**: the block protocol is reversed (`5a a5` + command 0x0008 +
-   address + 2048B data); the **only gap is the 2-byte trailer checksum**
-   (non-standard CRC16). Needs fresh block-stream samples +
-   reveng brute-force identification to crack. Then we stream directly, which
-   also unlocks incremental refresh above.
-3. **Lower resolution / color depth**: downsample look frames (e.g. 160×240),
-   dividing serial bytes by 4.
+1. **Measure the official path**: compare encoded size, conversion time, upload
+   time, and keyboard responsiveness for representative scenes.
+2. **Reduce unnecessary transfers**: preserve scene-level deduplication and
+   keep new animation assets within an explicit size budget.
+3. **Research only with evidence**: capture official-tool traffic and verify
+   acknowledgement and checksum behavior before any owner-supervised protocol
+   experiment. Partial updates require separate proof for compressed payloads.
 
-> TODO: capture SerialPortTool's 2060B block-write samples, crack the trailer
-> checksum → implement `pusher/push_cdc.py` (pyserial direct write + incremental).
+See [Screen transport research](docs/SCREEN_TRANSPORT_RESEARCH.md) for the
+evidence gates. No direct sender or firmware change is enabled by this release.
 
 ---
 
 ## 5. Deployment & ops
 
-- **Auto-start**: `schtasks /sc onlogon` to register `pythonw win_agent.py`
-  (persistence — do only with explicit approval).
+- **Auto-start**: implemented with a per-user Startup shortcut via
+  `setup_autostart.bat`. The shortcut launches `pythonw` directly.
+- **Coding-agent lifecycle bridge**: implemented for local Windows Codex and a
+  remote Codex relay. The handoff is fixed-enum only and keeps independent
+  revision sequences per source; see `docs/CODING_STATUS_BRIDGE.md`.
+- **Additional coding agents**: validate a Claude Code adapter against the same
+  status protocol before documenting it as supported.
 - **Watchdog**: detect `win_agent.py` crash and restart.
-- **Log rotation**: write `print` output to a file instead of the console window.
+- **Log rotation**: implemented in the local `agent_run.log` files.
 
 ---
 
